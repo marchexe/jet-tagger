@@ -1,2 +1,4 @@
+.sys.v*
+.swanproject
 raw_data/
 ready_data/
