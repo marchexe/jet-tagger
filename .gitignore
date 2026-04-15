@@ -1,4 +1,7 @@
-.sys.v*
-.swanproject
-raw_data/
-ready_data/
+.venv/
+data/
+__pycache__/
+artifacts/
+*.onnx.data
+*.pt
+*.npz
