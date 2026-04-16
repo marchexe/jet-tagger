@@ -1,4 +1,8 @@
 from __future__ import annotations
+from core.model import SimpleParT
+from core.data import DEFAULT_PARTICLE_FEATURES
+from torch import nn
+import torch
 
 import argparse
 import sys
@@ -8,15 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import torch
-from torch import nn
-
-from core.data import DEFAULT_PARTICLE_FEATURES
-from core.model import SimpleParT
-
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Export SimpleParT checkpoint to ONNX")
+    parser = argparse.ArgumentParser(
+        description="Export SimpleParT checkpoint to ONNX")
     parser.add_argument(
         "--checkpoint",
         type=Path,
@@ -79,11 +78,6 @@ def main() -> None:
             do_constant_folding=True,
             input_names=["x_particles", "padding_mask"],
             output_names=["probabilities"],
-            dynamic_axes={
-                "x_particles": {0: "batch_size", 1: "num_particles"},
-                "padding_mask": {0: "batch_size", 1: "num_particles"},
-                "probabilities": {0: "batch_size"},
-            },
         )
 
     print(f"Exported ONNX model to {args.output}")
