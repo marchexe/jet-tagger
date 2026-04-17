@@ -28,11 +28,12 @@ class SimpleParT(nn.Module):
 
     def forward(self, x_particles: Tensor, padding_mask: Tensor) -> Tensor:
         x = self.embedding(x_particles)
+        attention_padding_mask = ~padding_mask
         attended, _ = self.attention(
             x,
             x,
             x,
-            key_padding_mask=~padding_mask,
+            key_padding_mask=attention_padding_mask,
             need_weights=False,
         )
         pooled = masked_mean(attended, padding_mask)
