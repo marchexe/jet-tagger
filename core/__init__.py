@@ -5,7 +5,6 @@ from .data import (
     iter_dense_batches,
     load_split_arrays,
 )
-from .model import SimpleParT
 
 __all__ = [
     "DEFAULT_PARTICLE_FEATURES",
@@ -15,3 +14,11 @@ __all__ = [
     "iter_dense_batches",
     "load_split_arrays",
 ]
+
+
+def __getattr__(name: str):
+    if name == "SimpleParT":
+        from .model import SimpleParT
+
+        return SimpleParT
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -35,6 +35,7 @@ def parse_args() -> dict:
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measure-runs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--max-events", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
         "--output-json",
@@ -149,6 +150,7 @@ def main() -> None:
         warmup_runs=args["warmup_runs"],
         measure_runs=args["measure_runs"],
         output_json=Path(args["output_json"]),
+        max_events=args["max_events"] or None,
     )
     benchmark = PyTorchBenchmark(
         config,

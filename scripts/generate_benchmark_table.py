@@ -15,7 +15,7 @@ except ImportError:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a benchmark table figure with matplotlib"
+        description="Generate benchmark markdown and metric plots"
     )
     parser.add_argument(
         "--pytorch-json",
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-png",
         type=Path,
-        default=Path("artifacts/logs/benchmark_table.png"),
+        default=Path("artifacts/logs/benchmark_metrics.png"),
     )
     parser.add_argument(
         "--output-md",
@@ -212,6 +212,51 @@ def build_rows(
     ]
 
 
+def metric_value(data: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    if current in (None, ""):
+        return None
+    try:
+        return float(current)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_metric_records(
+    pytorch: dict[str, Any] | None,
+    onnx: dict[str, Any] | None,
+    sofie: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    candidates = [
+        ("PyTorch", pytorch),
+        ("ONNX Runtime", onnx),
+        ("SOFIE", sofie),
+    ]
+    records: list[dict[str, Any]] = []
+    for runtime, data in candidates:
+        if not data or data.get("available") is False or "metrics" not in data:
+            continue
+        records.append(
+            {
+                "runtime": runtime,
+                "accuracy": metric_value(data, ("metrics", "accuracy")),
+                "loss": metric_value(data, ("metrics", "loss")),
+                "latency_mean_ms": metric_value(data, ("latency", "mean_ms")),
+                "latency_p95_ms": metric_value(data, ("latency", "p95_ms")),
+                "throughput_events_per_s": metric_value(
+                    data,
+                    ("latency", "throughput_events_per_s"),
+                ),
+                "peak_rss_mb": metric_value(data, ("memory", "peak_rss_mb")),
+            }
+        )
+    return records
+
+
 def write_markdown(headers: list[str], rows: list[list[str]], output: Path) -> None:
     lines = []
     lines.append("| " + " | ".join(headers) + " |")
@@ -222,33 +267,71 @@ def write_markdown(headers: list[str], rows: list[list[str]], output: Path) -> N
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def draw_table(headers: list[str], rows: list[list[str]], output: Path) -> None:
+def draw_metric_plots(records: list[dict[str, Any]], output: Path) -> None:
     if not HAS_MATPLOTLIB:
-        print(f"Skipping PNG table because matplotlib is not installed: {output}")
+        print(f"Skipping PNG plot because matplotlib is not installed: {output}")
+        return
+    if not records:
+        print(f"Skipping PNG plot because no benchmark metrics were found: {output}")
         return
 
     plt.rcParams["font.family"] = "DejaVu Sans"
-    fig, ax = plt.subplots(figsize=(22, 4.5))
-    ax.axis("off")
+    metric_specs = [
+        ("Accuracy", "accuracy", ""),
+        ("Loss", "loss", ""),
+        ("Mean latency", "latency_mean_ms", "ms"),
+        ("P95 latency", "latency_p95_ms", "ms"),
+        ("Throughput", "throughput_events_per_s", "events/s"),
+        ("Peak RSS", "peak_rss_mb", "MB"),
+    ]
+    colors = {
+        "PyTorch": "#335c67",
+        "ONNX Runtime": "#e09f3e",
+        "SOFIE": "#7a9e7e",
+    }
 
-    table = ax.table(
-        cellText=rows,
-        colLabels=headers,
-        cellLoc="center",
-        loc="center",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.9)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8.5))
+    fig.suptitle("SimpleParT Runtime Benchmark Metrics", fontsize=18, fontweight="bold")
+    runtimes = [record["runtime"] for record in records]
 
-    for (row, _col), cell in table.get_celld().items():
-        if row == 0:
-            cell.set_text_props(weight="bold", color="white")
-            cell.set_facecolor("#1f4e79")
-        elif row == 2:
-            cell.set_facecolor("#eef5ea")
-        else:
-            cell.set_facecolor("#f8f9f9" if row % 2 == 0 else "#ffffff")
+    for ax, (title, key, unit) in zip(axes.flatten(), metric_specs, strict=True):
+        values = [record.get(key) for record in records]
+        numeric_values = [0.0 if value is None else float(value) for value in values]
+        bars = ax.bar(
+            runtimes,
+            numeric_values,
+            color=[colors.get(runtime, "#6c757d") for runtime in runtimes],
+        )
+        ax.set_title(title, fontweight="bold")
+        ax.grid(axis="y", alpha=0.22)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="x", rotation=18)
+        if unit:
+            ax.set_ylabel(unit)
+
+        for bar, value in zip(bars, values, strict=True):
+            if value is None:
+                label = "n/a"
+                y_pos = bar.get_height()
+            elif abs(float(value)) >= 1000:
+                label = f"{float(value):,.0f}"
+                y_pos = bar.get_height()
+            elif abs(float(value)) >= 10:
+                label = f"{float(value):.2f}"
+                y_pos = bar.get_height()
+            else:
+                label = f"{float(value):.4f}"
+                y_pos = bar.get_height()
+            ax.annotate(
+                label,
+                xy=(bar.get_x() + bar.get_width() / 2, y_pos),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
 
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -279,12 +362,13 @@ def main() -> None:
     ]
 
     rows = build_rows(pytorch, onnx, sofie)
+    records = build_metric_records(pytorch, onnx, sofie)
     write_markdown(headers, rows, args.output_md)
-    draw_table(headers, rows, args.output_png)
+    draw_metric_plots(records, args.output_png)
 
     print(f"Wrote markdown table to {args.output_md}")
     if HAS_MATPLOTLIB:
-        print(f"Wrote figure table to {args.output_png}")
+        print(f"Wrote metric plot to {args.output_png}")
 
 
 if __name__ == "__main__":

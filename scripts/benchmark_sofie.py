@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -27,13 +28,6 @@ except ImportError:
     HAS_ONNX = False
 
 try:
-    import cppyy
-
-    HAS_CPPYY = True
-except ImportError:
-    HAS_CPPYY = False
-
-try:
     import ROOT  # type: ignore[import-not-found]
 
     HAS_PYROOT = True
@@ -44,7 +38,7 @@ except ImportError:
 def parse_args() -> dict:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Benchmark SOFIE inference from Python")
+    parser = argparse.ArgumentParser(description="Benchmark SOFIE inference through PyROOT")
     parser.add_argument(
         "--header",
         type=Path,
@@ -58,7 +52,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--onnx",
         type=Path,
-        default=Path("artifacts/exports/simple_part.onnx"),
+        default=Path("artifacts/exports/simple_part_benchmark.onnx"),
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--split", type=str, default="val")
@@ -72,12 +66,7 @@ def parse_args() -> dict:
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measure-runs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument(
-        "--backend",
-        type=str,
-        choices=("auto", "cppyy", "pyroot"),
-        default="auto",
-    )
+    parser.add_argument("--max-events", type=int, default=0)
     parser.add_argument(
         "--input-normalization",
         type=str,
@@ -126,56 +115,58 @@ def extract_sofie_namespace(header_path: Path) -> str:
     return match.group(1)
 
 
-class SofieRunner:
-    def infer(self, x_batch: np.ndarray, mask_batch: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
+def discover_root_include_paths() -> list[Path]:
+    candidates: list[Path] = []
+
+    def add_candidate(path: Path) -> None:
+        header = path / "TMVA" / "SOFIE_common.hxx"
+        if header.exists() and path not in candidates:
+            candidates.append(path)
+
+    for variable_name in ("ROOTSYS", "CONDA_PREFIX"):
+        raw_value = os.environ.get(variable_name)
+        if raw_value:
+            root_path = Path(raw_value)
+            add_candidate(root_path / "include")
+            add_candidate(root_path / "include" / "root")
+
+    include_path_value = os.environ.get("ROOT_INCLUDE_PATH", "")
+    for raw_value in include_path_value.split(os.pathsep):
+        if raw_value.strip():
+            add_candidate(Path(raw_value.strip()))
+
+    for fallback_root in (Path("/usr"), Path("/usr/local"), Path("/opt/homebrew")):
+        add_candidate(fallback_root / "include")
+        add_candidate(fallback_root / "include" / "root")
+
+    return candidates
 
 
-class CppyySofieRunner(SofieRunner):
-    def __init__(self, header_path: Path, weights_path: Path, namespace_name: str) -> None:
-        cppyy.add_include_path(str(header_path.parent.resolve()))
-        cppyy.include(str(header_path.resolve()))
-        cppyy.cppdef(
-            f"""
-            #include <cstdint>
-            namespace jet_tagger_sofie_bridge {{
-            std::vector<float> infer_from_ptr(
-                {namespace_name}::Session& session,
-                std::size_t batch_size,
-                std::size_t n_particles,
-                std::uintptr_t x_ptr,
-                std::uintptr_t mask_ptr
-            ) {{
-                return session.infer(
-                    batch_size,
-                    n_particles,
-                    reinterpret_cast<float const*>(x_ptr),
-                    reinterpret_cast<std::uint8_t const*>(mask_ptr)
-                );
-            }}
-            }}
-            """
-        )
-        self.session = getattr(cppyy.gbl, namespace_name).Session(str(weights_path))
-        self.bridge = cppyy.gbl.jet_tagger_sofie_bridge
-
-    def infer(self, x_batch: np.ndarray, mask_batch: np.ndarray) -> np.ndarray:
-        x_flat = np.ascontiguousarray(x_batch.reshape(-1), dtype=np.float32)
-        mask_flat = np.ascontiguousarray(mask_batch.reshape(-1), dtype=np.uint8)
-        result = self.bridge.infer_from_ptr(
-            self.session,
-            int(x_batch.shape[0]),
-            int(x_batch.shape[1]),
-            int(x_flat.ctypes.data),
-            int(mask_flat.ctypes.data),
-        )
-        return np.asarray(result, dtype=np.float32).reshape(x_batch.shape[0], -1)
-
-
-class PyRootSofieRunner(SofieRunner):
-    def __init__(self, header_path: Path, weights_path: Path, namespace_name: str) -> None:
+class PyRootSofieRunner:
+    def __init__(
+        self,
+        header_path: Path,
+        weights_path: Path,
+        namespace_name: str,
+        *,
+        max_batch_size: int,
+        max_constituents: int,
+    ) -> None:
+        include_paths = discover_root_include_paths()
+        for include_path in include_paths:
+            ROOT.gInterpreter.AddIncludePath(str(include_path.resolve()))
         ROOT.gInterpreter.AddIncludePath(str(header_path.parent.resolve()))
-        ROOT.gInterpreter.Declare(f'#include "{header_path.resolve().as_posix()}"')
+
+        declare_ok = ROOT.gInterpreter.Declare(f'#include "{header_path.resolve().as_posix()}"')
+        if not declare_ok:
+            root_hint = ", ".join(str(path) for path in include_paths) or "<none found>"
+            raise RuntimeError(
+                "Failed to compile SOFIE header against the current ROOT installation. "
+                f"Detected ROOT include paths: {root_hint}. "
+                "Regenerate the SOFIE artifacts in the same WSL/ROOT environment with "
+                "`python scripts/export_sofie.py`."
+            )
+
         ROOT.gInterpreter.Declare(
             f"""
             #include <cstdint>
@@ -197,7 +188,12 @@ class PyRootSofieRunner(SofieRunner):
             }}
             """
         )
-        self.session = getattr(ROOT, namespace_name).Session(str(weights_path))
+
+        self.session = getattr(ROOT, namespace_name).Session(
+            str(weights_path),
+            int(max_batch_size),
+            int(max_constituents),
+        )
         self.bridge = ROOT.jet_tagger_sofie_bridge
 
     def infer(self, x_batch: np.ndarray, mask_batch: np.ndarray) -> np.ndarray:
@@ -224,7 +220,6 @@ class SofieBenchmark(RuntimeBenchmark):
         weights_path: Path,
         onnx_path: Path,
         norm_path: Path,
-        backend: str,
         input_normalization: str,
         output_kind: str,
     ) -> None:
@@ -233,29 +228,34 @@ class SofieBenchmark(RuntimeBenchmark):
         self.weights_path = weights_path
         self.onnx_path = onnx_path
         self.norm_path = norm_path
-        self.backend = backend
         self.input_normalization = input_normalization
         self.requested_output_kind = output_kind
         self.metadata: dict[str, str] = {}
         self.normalization: ParticleNormalization | None = None
-        self.runner: SofieRunner | None = None
-        self.resolved_backend = ""
+        self.runner: PyRootSofieRunner | None = None
         self.output_kind = "auto"
 
     def setup(self) -> dict | None:
         self.log("SOFIE Benchmark")
-        self.log(
-            f"backend={self.backend} header={self.header_path} weights={self.weights_path}"
-        )
+        self.log(f"backend=pyroot header={self.header_path} weights={self.weights_path}")
 
         if not self.header_path.exists() or not self.weights_path.exists():
             return self.build_unavailable_result("sofie_artifacts_missing")
+        if not HAS_PYROOT:
+            return self.build_unavailable_result("pyroot_not_installed")
 
         namespace_name = extract_sofie_namespace(self.header_path)
-        self.runner, reason = self.create_runner(namespace_name)
-        if self.runner is None:
-            return self.build_unavailable_result(reason)
-        self.resolved_backend = reason
+        try:
+            self.runner = PyRootSofieRunner(
+                self.header_path,
+                self.weights_path,
+                namespace_name,
+                max_batch_size=self.config.batch_size,
+                max_constituents=self.config.max_constituents,
+            )
+        except Exception as exc:
+            self.log(f"pyroot setup failed: {exc}")
+            return self.build_unavailable_result("pyroot_setup_failed")
 
         self.metadata = load_onnx_metadata(self.onnx_path)
         if self.should_apply_external_normalization() and self.norm_path.exists():
@@ -266,17 +266,6 @@ class SofieBenchmark(RuntimeBenchmark):
 
         self.output_kind = self.resolve_output_kind()
         return None
-
-    def create_runner(self, namespace_name: str) -> tuple[SofieRunner | None, str]:
-        if self.backend in {"auto", "cppyy"} and HAS_CPPYY:
-            return CppyySofieRunner(self.header_path, self.weights_path, namespace_name), "cppyy"
-        if self.backend == "cppyy":
-            return None, "cppyy_not_installed"
-        if self.backend in {"auto", "pyroot"} and HAS_PYROOT:
-            return PyRootSofieRunner(self.header_path, self.weights_path, namespace_name), "pyroot"
-        if self.backend == "pyroot":
-            return None, "pyroot_not_installed"
-        return None, "no_python_sofie_backend_available"
 
     def should_apply_external_normalization(self) -> bool:
         if self.input_normalization == "always":
@@ -291,6 +280,11 @@ class SofieBenchmark(RuntimeBenchmark):
     def resolve_output_kind(self) -> str:
         if self.requested_output_kind != "auto":
             return self.requested_output_kind
+        header_text = self.header_path.read_text(encoding="utf-8", errors="replace")
+        if "tensor_probabilities" in header_text:
+            return "probabilities"
+        if "tensor_logits" in header_text:
+            return "logits"
         output_kind = self.metadata.get("jet_tagger_output_kind")
         if output_kind in {"logits", "probabilities"}:
             return output_kind
@@ -320,7 +314,7 @@ class SofieBenchmark(RuntimeBenchmark):
 
     def build_extra(self) -> dict[str, object]:
         return {
-            "backend": self.resolved_backend,
+            "backend": "pyroot",
             "external_input_normalization": self.normalization is not None,
             "onnx_metadata": self.metadata,
         }
@@ -337,6 +331,7 @@ def main() -> None:
         warmup_runs=args["warmup_runs"],
         measure_runs=args["measure_runs"],
         output_json=Path(args["output_json"]),
+        max_events=args["max_events"] or None,
     )
     benchmark = SofieBenchmark(
         config,
@@ -344,7 +339,6 @@ def main() -> None:
         weights_path=Path(args["weights"]),
         onnx_path=Path(args["onnx"]),
         norm_path=Path(args["norm_file"]),
-        backend=args["backend"],
         input_normalization=args["input_normalization"],
         output_kind=args["output_kind"],
     )

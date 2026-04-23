@@ -13,13 +13,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-import torch
-from torch import nn
-import onnx
-
-from core.benchmark import load_normalization_from_checkpoint
-from core.data import DEFAULT_PARTICLE_FEATURES
-from core.model import SimpleParT
+from core.export import export_checkpoint_to_onnx
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,121 +24,59 @@ def parse_args() -> argparse.Namespace:
         default=Path("artifacts/checkpoints/simple_part_best.pt"),
     )
     parser.add_argument(
+        "--variant",
+        type=str,
+        choices=("benchmark", "visual"),
+        default="benchmark",
+        help="Export benchmark-ready or visualization-friendly ONNX",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
-        default=Path("artifacts/exports/simple_part.onnx"),
+        default=None,
+        help="Optional custom output path",
     )
     parser.add_argument("--max-constituents", type=int, default=16)
     parser.add_argument("--opset", type=int, default=17)
+    parser.add_argument(
+        "--embed-normalization",
+        action="store_true",
+        help="Embed input normalization into the exported graph",
+    )
+    parser.add_argument(
+        "--dynamic-batch",
+        action="store_true",
+        help="Make the exported graph support dynamic batch size",
+    )
     return parser.parse_args()
 
 
-class ExportWrapper(nn.Module):
-    def __init__(
-        self,
-        model: nn.Module,
-        normalization_mean: torch.Tensor | None,
-        normalization_std: torch.Tensor | None,
-    ) -> None:
-        super().__init__()
-        self.model = model
-        if normalization_mean is not None and normalization_std is not None:
-            self.register_buffer("normalization_mean", normalization_mean)
-            self.register_buffer("normalization_std", normalization_std)
-        else:
-            self.normalization_mean = None
-            self.normalization_std = None
-
-    def forward(self, x_particles: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
-        if self.normalization_mean is not None and self.normalization_std is not None:
-            x_particles = (x_particles - self.normalization_mean) / self.normalization_std
-            x_particles = torch.where(
-                padding_mask.unsqueeze(-1),
-                x_particles,
-                torch.zeros_like(x_particles),
-            )
-        return self.model(x_particles, padding_mask)
+def default_output_path(variant: str) -> Path:
+    if variant == "benchmark":
+        return Path("artifacts/exports/simple_part_benchmark.onnx")
+    return Path("artifacts/exports/simple_part_visual.onnx")
 
 
-def attach_metadata(
-    output_path: Path,
-    *,
-    has_embedded_normalization: bool,
-    max_constituents: int,
-) -> None:
-    model = onnx.load(str(output_path), load_external_data=False)
-    metadata = {
-        "jet_tagger_model": "SimpleParT",
-        "jet_tagger_output_kind": "logits",
-        "jet_tagger_embedded_normalization": "true" if has_embedded_normalization else "false",
-        "jet_tagger_particle_features": ",".join(DEFAULT_PARTICLE_FEATURES),
-        "jet_tagger_max_constituents": str(max_constituents),
-    }
-    del model.metadata_props[:]
-    for key, value in metadata.items():
-        prop = model.metadata_props.add()
-        prop.key = key
-        prop.value = value
-    onnx.save(model, str(output_path))
+def resolve_export_options(args: argparse.Namespace) -> tuple[Path, bool, bool]:
+    output_path = args.output or default_output_path(args.variant)
+    if args.variant == "benchmark":
+        return output_path, True, True
+    return output_path, args.embed_normalization, args.dynamic_batch
 
 
 def main() -> None:
     args = parse_args()
-    checkpoint = torch.load(
-        args.checkpoint,
-        map_location="cpu",
-        weights_only=False,
-    )
-
-    base_model = SimpleParT(input_dim=len(DEFAULT_PARTICLE_FEATURES))
-    base_model.load_state_dict(checkpoint["model_state_dict"])
-    normalization = load_normalization_from_checkpoint(checkpoint)
-    normalization_mean = None
-    normalization_std = None
-    if normalization is not None:
-        normalization_mean = torch.as_tensor(
-            normalization.mean,
-            dtype=torch.float32,
-        ).view(1, 1, -1)
-        normalization_std = torch.as_tensor(
-            normalization.std,
-            dtype=torch.float32,
-        ).view(1, 1, -1)
-
-    model = ExportWrapper(base_model, normalization_mean, normalization_std)
-    model.eval()
-
-    x_particles = torch.randn(
-        1,
-        args.max_constituents,
-        len(DEFAULT_PARTICLE_FEATURES),
-        dtype=torch.float32,
-    )
-    padding_mask = torch.ones(
-        1,
-        args.max_constituents,
-        dtype=torch.bool,
-    )
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with torch.inference_mode():
-        torch.onnx.export(
-            model,
-            (x_particles, padding_mask),
-            args.output,
-            export_params=True,
-            opset_version=args.opset,
-            do_constant_folding=True,
-            input_names=["x_particles", "padding_mask"],
-            output_names=["logits"],
-        )
-
-    attach_metadata(
-        args.output,
-        has_embedded_normalization=normalization is not None,
+    output_path, embed_normalization, dynamic_batch = resolve_export_options(args)
+    export_checkpoint_to_onnx(
+        checkpoint_path=args.checkpoint,
+        output_path=output_path,
         max_constituents=args.max_constituents,
+        opset=args.opset,
+        variant=args.variant,
+        embed_normalization=embed_normalization,
+        dynamic_batch=dynamic_batch,
     )
-    print(f"Exported ONNX model to {args.output}")
+    print(f"Exported {args.variant} ONNX model to {output_path}")
 
 
 if __name__ == "__main__":

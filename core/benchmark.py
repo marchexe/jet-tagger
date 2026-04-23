@@ -39,6 +39,7 @@ class BenchmarkConfig:
     warmup_runs: int
     measure_runs: int
     output_json: Path
+    max_events: int | None = None
 
 
 def load_normalization_from_checkpoint(
@@ -72,6 +73,7 @@ def collect_split_arrays(
     max_constituents: int,
     step_size: str,
     normalization: ParticleNormalization | None,
+    max_events: int | None = None,
 ) -> SplitArrays:
     print(f"[benchmark] Loading {split} split...", flush=True)
 
@@ -81,6 +83,7 @@ def collect_split_arrays(
     x_particles_list: list[np.ndarray] = []
     masks_list: list[np.ndarray] = []
     labels_list: list[np.ndarray] = []
+    loaded_events = 0
 
     sources = ((bb_paths, 1), (gg_paths, 0))
     for paths, label in sources:
@@ -92,9 +95,27 @@ def collect_split_arrays(
             normalization=normalization,
             verbose=False,
         ):
-            x_particles_list.append(batch.x_particles)
-            masks_list.append(batch.mask)
-            labels_list.append(batch.labels)
+            remaining_events = None
+            if max_events is not None and max_events > 0:
+                remaining_events = max_events - loaded_events
+                if remaining_events <= 0:
+                    break
+
+            x_particles = batch.x_particles
+            mask = batch.mask
+            labels = batch.labels
+            if remaining_events is not None and x_particles.shape[0] > remaining_events:
+                x_particles = x_particles[:remaining_events]
+                mask = mask[:remaining_events]
+                labels = labels[:remaining_events]
+
+            x_particles_list.append(x_particles)
+            masks_list.append(mask)
+            labels_list.append(labels)
+            loaded_events += int(labels.shape[0])
+
+        if max_events is not None and max_events > 0 and loaded_events >= max_events:
+            break
 
     if not x_particles_list:
         raise ValueError(
@@ -126,7 +147,8 @@ def build_numpy_batches(
     batches: list[tuple[np.ndarray, np.ndarray]] = []
     for start_idx in range(0, num_events, batch_size):
         end_idx = min(start_idx + batch_size, num_events)
-        batches.append((x_particles[start_idx:end_idx], mask[start_idx:end_idx]))
+        batches.append(
+            (x_particles[start_idx:end_idx], mask[start_idx:end_idx]))
     return batches
 
 
@@ -166,7 +188,8 @@ def format_batching_message(
 
 def classify_output_kind(outputs: np.ndarray) -> str:
     if outputs.ndim != 2 or outputs.shape[1] == 0:
-        raise ValueError(f"Expected 2D classifier outputs, got shape={outputs.shape}")
+        raise ValueError(
+            f"Expected 2D classifier outputs, got shape={outputs.shape}")
 
     if not np.isfinite(outputs).all():
         return "logits"
@@ -205,7 +228,8 @@ def compute_classification_metrics(
     else:
         logits_safe = np.clip(outputs, -100.0, 100.0)
         row_max = np.max(logits_safe, axis=1, keepdims=True)
-        logsumexp = row_max + np.log(np.exp(logits_safe - row_max).sum(axis=1, keepdims=True))
+        logsumexp = row_max + \
+            np.log(np.exp(logits_safe - row_max).sum(axis=1, keepdims=True))
         log_softmax = logits_safe - logsumexp
         loss = float(-log_softmax[np.arange(len(labels)), labels].mean())
 
@@ -223,7 +247,8 @@ def summarize_latency(
 ) -> dict[str, float | int]:
     durations = np.asarray(durations_ms, dtype=np.float64)
     total_duration_s = float(durations.sum() / 1000.0)
-    throughput = float(total_events / total_duration_s) if total_duration_s > 0 else 0.0
+    throughput = float(
+        total_events / total_duration_s) if total_duration_s > 0 else 0.0
     return {
         "samples": int(durations.size),
         "mean_ms": float(np.mean(durations)),
@@ -242,6 +267,7 @@ def benchmark_latency(
     warmup_runs: int,
     measure_runs: int,
     synchronize: Callable[[], None] | None = None,
+    progress_name: str = "Latency",
 ) -> dict[str, float | int]:
     print(f"[benchmark] Warmup {warmup_runs} runs...", flush=True)
     for _ in range(warmup_runs):
@@ -258,6 +284,7 @@ def benchmark_latency(
     total_events = 0
 
     for _ in range(measure_runs):
+        run_index = _ + 1
         for batch in batches:
             start = time.perf_counter()
             run_batch(batch)
@@ -266,6 +293,11 @@ def benchmark_latency(
             elapsed_s = time.perf_counter() - start
             durations_ms.append(elapsed_s * 1000.0)
             total_events += int(batch_size_of(batch))
+        if measure_runs > 1:
+            print(
+                f"[benchmark] {progress_name} progress: run {run_index}/{measure_runs}",
+                flush=True,
+            )
 
     return summarize_latency(durations_ms, total_events=total_events)
 
@@ -289,7 +321,8 @@ def benchmark_memory(
 
     rss_baseline_mb = process.memory_info().rss / 1024 / 1024
     peak_rss_mb = rss_baseline_mb
-    print(f"[benchmark] Memory baseline RSS={rss_baseline_mb:.2f} MB", flush=True)
+    print(
+        f"[benchmark] Memory baseline RSS={rss_baseline_mb:.2f} MB", flush=True)
 
     for _ in range(3):
         for batch in batches:
@@ -379,6 +412,7 @@ class RuntimeBenchmark(ABC):
             max_constituents=self.config.max_constituents,
             step_size=self.config.step_size,
             normalization=self.get_normalization(),
+            max_events=self.config.max_events,
         )
 
     def prepare_batch(self, x_batch: np.ndarray, mask_batch: np.ndarray) -> Any:
@@ -394,7 +428,8 @@ class RuntimeBenchmark(ABC):
             numpy_batches,
             requested_batch_size=self.config.batch_size,
         )
-        self.log(format_batching_message(event_count=split_arrays.event_count, batching=batching)[12:])
+        self.log(format_batching_message(
+            event_count=split_arrays.event_count, batching=batching)[12:])
         return [self.prepare_batch(x_batch, mask_batch) for x_batch, mask_batch in numpy_batches], batching
 
     def batch_event_count(self, batch: Any) -> int:
