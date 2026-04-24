@@ -23,8 +23,32 @@ def _project_last_dim(values: Tensor, weight: Tensor, bias: Tensor | None) -> Te
 def _masked_mean_without_clip(values: Tensor, mask: Tensor) -> Tensor:
     weights = mask.unsqueeze(-1).to(dtype=values.dtype)
     total = (values * weights).sum(dim=1)
-    counts = weights.sum(dim=1)
-    return total / counts
+    counts = weights.sum(dim=1).to(dtype=torch.int64).squeeze(-1)
+    reciprocal_lookup = torch.tensor(
+        [
+            1.0,
+            1.0,
+            0.5,
+            1.0 / 3.0,
+            0.25,
+            0.2,
+            1.0 / 6.0,
+            1.0 / 7.0,
+            0.125,
+            1.0 / 9.0,
+            0.1,
+            1.0 / 11.0,
+            1.0 / 12.0,
+            1.0 / 13.0,
+            1.0 / 14.0,
+            1.0 / 15.0,
+            1.0 / 16.0,
+        ],
+        dtype=values.dtype,
+        device=values.device,
+    )
+    scale = reciprocal_lookup[counts].unsqueeze(-1)
+    return total * scale
 
 
 class _ExportableSelfAttention(nn.Module):
@@ -130,7 +154,7 @@ class _BenchmarkExportSimpleParT(nn.Module):
             x,
             key_padding_mask=attention_padding_mask,
         )
-        pooled = _masked_mean_without_clip(attended, padding_mask)
+        pooled = masked_mean(attended, padding_mask)
         return _project_last_dim(
             pooled,
             self.classifier.weight,
@@ -197,7 +221,7 @@ class _SofieExportSimpleParT(nn.Module):
             self.attention.out_proj.weight,
             self.attention.out_proj.bias,
         )
-        pooled = masked_mean(attended, padding_mask)
+        pooled = _masked_mean_without_clip(attended, padding_mask)
         return _project_last_dim(
             pooled,
             self.classifier.weight,
