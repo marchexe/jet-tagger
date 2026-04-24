@@ -106,7 +106,7 @@ def load_onnx_metadata(onnx_path: Path) -> dict[str, str]:
     return {prop.key: prop.value for prop in model.metadata_props}
 
 
-def detect_sofie_header_api(header_text: str) -> tuple[str, bool]:
+def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
     namespace_match = re.search(
         r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?:(?!namespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{).)*?class\s+Session\b",
         header_text,
@@ -121,15 +121,23 @@ def detect_sofie_header_api(header_text: str) -> tuple[str, bool]:
         re.DOTALL,
     )
     if dynamic_infer is not None:
-        return namespace_match.group(1), True
+        return namespace_match.group(1), "dynamic_uint8"
 
-    static_infer = re.search(
+    static_uint8_infer = re.search(
+        r"\binfer\s*\(\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:std::)?uint8_t\s+const\s*\*",
+        header_text,
+        re.DOTALL,
+    )
+    if static_uint8_infer is not None:
+        return namespace_match.group(1), "static_uint8"
+
+    static_bool_infer = re.search(
         r"\binfer\s*\(\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*bool\s+const\s*\*",
         header_text,
         re.DOTALL,
     )
-    if static_infer is not None:
-        return namespace_match.group(1), False
+    if static_bool_infer is not None:
+        return namespace_match.group(1), "static_bool"
 
     raise ValueError("Could not detect supported SOFIE Session::infer signature")
 
@@ -172,7 +180,8 @@ class PyRootSofieRunner:
         max_constituents: int,
     ) -> None:
         self.header_text = header_path.read_text(encoding="utf-8", errors="replace")
-        detected_namespace_name, self.dynamic_infer = detect_sofie_header_api(self.header_text)
+        detected_namespace_name, self.infer_mode = detect_sofie_header_api(self.header_text)
+        self.dynamic_infer = self.infer_mode == "dynamic_uint8"
         if detected_namespace_name != namespace_name:
             raise RuntimeError(
                 "Parsed SOFIE namespace does not match the namespace selected by the benchmark "
@@ -213,7 +222,7 @@ class PyRootSofieRunner:
                 }}
                 }}
             """
-        else:
+        elif self.infer_mode == "static_bool":
             bridge_code = f"""
                 #include <cstdint>
                 namespace jet_tagger_sofie_bridge {{
@@ -225,6 +234,22 @@ class PyRootSofieRunner:
                     return session.infer(
                         reinterpret_cast<float const*>(x_ptr),
                         reinterpret_cast<bool const*>(mask_ptr)
+                    );
+                }}
+                }}
+            """
+        else:
+            bridge_code = f"""
+                #include <cstdint>
+                namespace jet_tagger_sofie_bridge {{
+                std::vector<float> infer_static_from_ptr(
+                    {namespace_name}::Session& session,
+                    std::uintptr_t x_ptr,
+                    std::uintptr_t mask_ptr
+                ) {{
+                    return session.infer(
+                        reinterpret_cast<float const*>(x_ptr),
+                        reinterpret_cast<std::uint8_t const*>(mask_ptr)
                     );
                 }}
                 }}
@@ -255,7 +280,8 @@ class PyRootSofieRunner:
                 int(mask_flat.ctypes.data),
             )
         else:
-            mask_flat = np.ascontiguousarray(mask_batch.reshape(-1), dtype=np.bool_)
+            mask_dtype = np.bool_ if self.infer_mode == "static_bool" else np.uint8
+            mask_flat = np.ascontiguousarray(mask_batch.reshape(-1), dtype=mask_dtype)
             result = self.bridge.infer_static_from_ptr(
                 self.session,
                 int(x_flat.ctypes.data),
