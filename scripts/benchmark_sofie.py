@@ -170,37 +170,44 @@ class PyRootSofieRunner:
                 "`python scripts/export_sofie.py`."
             )
 
-        ROOT.gInterpreter.Declare(
-            f"""
-            #include <cstdint>
-            namespace jet_tagger_sofie_bridge {{
-            std::vector<float> infer_dynamic_from_ptr(
-                {namespace_name}::Session& session,
-                std::size_t batch_size,
-                std::size_t n_particles,
-                std::uintptr_t x_ptr,
-                std::uintptr_t mask_ptr
-            ) {{
-                return session.infer(
-                    batch_size,
-                    n_particles,
-                    reinterpret_cast<float const*>(x_ptr),
-                    reinterpret_cast<std::uint8_t const*>(mask_ptr)
-                );
-            }}
-            std::vector<float> infer_static_from_ptr(
-                {namespace_name}::Session& session,
-                std::uintptr_t x_ptr,
-                std::uintptr_t mask_ptr
-            ) {{
-                return session.infer(
-                    reinterpret_cast<float const*>(x_ptr),
-                    reinterpret_cast<bool const*>(mask_ptr)
-                );
-            }}
-            }}
+        if self.dynamic_infer:
+            bridge_code = f"""
+                #include <cstdint>
+                namespace jet_tagger_sofie_bridge {{
+                std::vector<float> infer_dynamic_from_ptr(
+                    {namespace_name}::Session& session,
+                    std::size_t batch_size,
+                    std::size_t n_particles,
+                    std::uintptr_t x_ptr,
+                    std::uintptr_t mask_ptr
+                ) {{
+                    return session.infer(
+                        batch_size,
+                        n_particles,
+                        reinterpret_cast<float const*>(x_ptr),
+                        reinterpret_cast<std::uint8_t const*>(mask_ptr)
+                    );
+                }}
+                }}
             """
-        )
+        else:
+            bridge_code = f"""
+                #include <cstdint>
+                namespace jet_tagger_sofie_bridge {{
+                std::vector<float> infer_static_from_ptr(
+                    {namespace_name}::Session& session,
+                    std::uintptr_t x_ptr,
+                    std::uintptr_t mask_ptr
+                ) {{
+                    return session.infer(
+                        reinterpret_cast<float const*>(x_ptr),
+                        reinterpret_cast<bool const*>(mask_ptr)
+                    );
+                }}
+                }}
+            """
+
+        ROOT.gInterpreter.Declare(bridge_code)
 
         session_type = getattr(ROOT, namespace_name).Session
         if self.dynamic_infer:
