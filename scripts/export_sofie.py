@@ -75,7 +75,8 @@ def main() -> None:
 
     parser = ROOT.TMVA.Experimental.SOFIE.RModelParser_ONNX()
     model = parser.Parse(str(onnx_path), bool(args.verbose))
-    model.Generate(batchSize=int(args.batch_size))
+    generate_options = ROOT.TMVA.Experimental.SOFIE.Options.kDefault
+    model.Generate(generate_options, int(args.batch_size), 0, bool(args.verbose))
     model.OutputGenerated(str(output_header))
 
     output_dat = output_header.with_suffix(".dat")
