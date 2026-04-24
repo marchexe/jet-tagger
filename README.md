@@ -9,6 +9,10 @@ different ONNX artifacts from the same checkpoint:
 - `simple_part_benchmark.onnx` for runtime benchmarking.
 - `simple_part_visual.onnx` for Netron/model visualization.
 
+The trained PyTorch model in `core/model.py` remains the source of truth. The
+runtime pipeline starts from the frozen checkpoint and does not introduce a
+separate model implementation for benchmarking.
+
 ## Project Layout
 
 ```text
@@ -183,8 +187,8 @@ Useful quick test:
 
 ### SOFIE
 
-SOFIE benchmarking is optional and is intended to run in WSL/Linux with
-PyROOT from a ROOT installation in the same environment.
+SOFIE benchmarking is optional and is intended to run in WSL/Linux or SWAN
+with PyROOT from the same ROOT installation that generates the SOFIE code.
 
 Recommended WSL setup:
 
@@ -195,9 +199,13 @@ cd /mnt/c/Users/ReDi_NRW_6489/Documents/jet-tagger
 ```
 
 Export fresh SOFIE artifacts with the same ROOT version that will run the
-benchmark. SOFIE uses the same benchmark ONNX graph as ONNX Runtime; if ROOT
-cannot convert it, that is treated as a backend limitation rather than a
-different model variant.
+benchmark. The canonical runtime pipeline is:
+
+```text
+checkpoint -> benchmark ONNX -> native SOFIE .hxx/.dat -> PyTorch / ONNX / SOFIE benchmarks -> markdown + PNG
+```
+
+SOFIE uses the same benchmark ONNX graph as ONNX Runtime.
 
 ```bash
 python scripts/export_onnx.py --variant benchmark
@@ -214,13 +222,13 @@ artifacts/sofie/simple_part.dat
 Then run:
 
 ```bash
-python scripts/benchmark_sofie.py
+python scripts/benchmark_sofie.py --onnx artifacts/exports/simple_part_benchmark.onnx
 ```
 
 Useful quick test:
 
 ```bash
-python scripts/benchmark_sofie.py --max-events 2048 --warmup-runs 1 --measure-runs 1 --batch-size 128
+python scripts/benchmark_sofie.py --onnx artifacts/exports/simple_part_benchmark.onnx --max-events 2048 --warmup-runs 1 --measure-runs 1 --batch-size 128
 ```
 
 The benchmark writes:
@@ -277,6 +285,17 @@ For a full PyTorch + ONNX Runtime + SOFIE pipeline with system information:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_full_benchmarks.py
+```
+
+This script always:
+
+```text
+1. exports benchmark ONNX
+2. regenerates native SOFIE .hxx/.dat from that ONNX
+3. runs the PyTorch benchmark
+4. runs the ONNX Runtime benchmark
+5. runs the SOFIE benchmark
+6. writes system JSON, markdown table, and PNG plot
 ```
 
 This writes:

@@ -15,7 +15,7 @@ from core.system_info import collect_system_info
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the full PyTorch + ONNX + SOFIE benchmark pipeline and log system info."
+        description="Run the canonical PyTorch + ONNX + SOFIE benchmark pipeline and log system info."
     )
     parser.add_argument(
         "--python",
@@ -27,27 +27,6 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         type=Path,
         default=Path("artifacts/checkpoints/simple_part_best.pt"),
-    )
-    parser.add_argument(
-        "--generate-sofie",
-        action="store_true",
-        help="Regenerate SOFIE .hxx/.dat from ONNX before benchmarking. By default the pipeline reuses existing artifacts.",
-    )
-    parser.add_argument(
-        "--sofie-header",
-        type=Path,
-        default=Path("artifacts/sofie/simple_part.hxx"),
-    )
-    parser.add_argument(
-        "--sofie-weights",
-        type=Path,
-        default=Path("artifacts/sofie/simple_part.dat"),
-    )
-    parser.add_argument(
-        "--sofie-onnx",
-        type=Path,
-        default=Path("artifacts/exports/simple_part_benchmark.onnx"),
-        help="Optional ONNX file used only for SOFIE metadata/output-kind hints.",
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--split", type=str, default="val")
@@ -100,6 +79,10 @@ def run_command(command: list[str]) -> None:
 def main() -> None:
     args = parse_args()
 
+    sofie_header = Path("artifacts/sofie/simple_part.hxx")
+    sofie_weights = Path("artifacts/sofie/simple_part.dat")
+    benchmark_onnx = Path("artifacts/exports/simple_part_benchmark.onnx")
+
     run_config = {
         "checkpoint": str(args.checkpoint),
         "data_dir": str(args.data_dir),
@@ -113,10 +96,9 @@ def main() -> None:
         "device": args.device,
         "providers": args.providers,
         "python": args.python,
-        "generate_sofie": args.generate_sofie,
-        "sofie_header": str(args.sofie_header),
-        "sofie_weights": str(args.sofie_weights),
-        "sofie_onnx": str(args.sofie_onnx),
+        "sofie_header": str(sofie_header),
+        "sofie_weights": str(sofie_weights),
+        "sofie_onnx": str(benchmark_onnx),
     }
 
     args.system_json.parent.mkdir(parents=True, exist_ok=True)
@@ -159,30 +141,18 @@ def main() -> None:
             str(args.max_constituents),
         ]
     )
-    if args.generate_sofie:
-        run_command(
-            [
-                python_executable,
-                "scripts/export_sofie.py",
-                "--onnx",
-                str(args.sofie_onnx),
-                "--output-header",
-                str(args.sofie_header),
-                "--batch-size",
-                str(args.batch_size),
-            ]
-        )
-    else:
-        if not args.sofie_header.exists() or not args.sofie_weights.exists():
-            raise SystemExit(
-                "SOFIE artifacts are missing. Pass --generate-sofie to build them first, "
-                f"or provide existing files via --sofie-header/--sofie-weights. "
-                f"Current paths: header={args.sofie_header}, weights={args.sofie_weights}"
-            )
-        print(
-            f"[pipeline] Reusing existing SOFIE artifacts: header={args.sofie_header} weights={args.sofie_weights}",
-            flush=True,
-        )
+    run_command(
+        [
+            python_executable,
+            "scripts/export_sofie.py",
+            "--onnx",
+            str(benchmark_onnx),
+            "--output-header",
+            str(sofie_header),
+            "--batch-size",
+            str(args.batch_size),
+        ]
+    )
     run_command(
         [
             python_executable,
@@ -201,7 +171,7 @@ def main() -> None:
             python_executable,
             "scripts/benchmark_onnx.py",
             "--onnx",
-            "artifacts/exports/simple_part_benchmark.onnx",
+            str(benchmark_onnx),
             "--providers",
             args.providers,
             "--output-json",
@@ -214,11 +184,13 @@ def main() -> None:
             python_executable,
             "scripts/benchmark_sofie.py",
             "--header",
-            str(args.sofie_header),
+            str(sofie_header),
             "--weights",
-            str(args.sofie_weights),
+            str(sofie_weights),
             "--onnx",
-            str(args.sofie_onnx),
+            str(benchmark_onnx),
+            "--input-normalization",
+            "never",
             "--output-json",
             str(args.sofie_json),
             *common_args,

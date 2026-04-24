@@ -33,11 +33,6 @@ def parse_args() -> argparse.Namespace:
         default=Path("artifacts/logs/benchmark_sofie.json"),
     )
     parser.add_argument(
-        "--sofie-text",
-        type=Path,
-        default=Path("artifacts/logs/benchmark_sofie.txt"),
-    )
-    parser.add_argument(
         "--output-png",
         type=Path,
         default=Path("artifacts/logs/benchmark_metrics.png"),
@@ -54,18 +49,6 @@ def load_json_if_exists(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def load_sofie_text(path: Path) -> dict[str, str] | None:
-    if not path.exists():
-        return None
-    result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        result[key.strip()] = value.strip()
-    return result if result else None
 
 
 def fmt(value: Any, *, digits: int = 4, suffix: str = "") -> str:
@@ -151,64 +134,15 @@ def row_from_runtime(data: dict[str, Any] | None, *, runtime_label: str) -> list
     ]
 
 
-def row_from_sofie(sofie: dict[str, Any] | None) -> list[str]:
-    if not sofie:
-        return ["SimpleParT", "SOFIE C++", "", "", "", "", "", "", "", "", "missing"]
-
-    if sofie.get("available") is False:
-        return [
-            sofie.get("model", "SimpleParT"),
-            "SOFIE",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            sofie.get("reason", "unavailable"),
-        ]
-
-    if "metrics" in sofie:
-        return row_from_runtime(sofie, runtime_label="SOFIE")
-
-    notes = join_notes(
-        [
-            f"batch={sofie.get('requested_batch_size', '')}" if sofie.get("requested_batch_size") else "",
-            (
-                f"range={sofie.get('min_batch_size', '')}-{sofie.get('max_batch_size', '')}"
-                if sofie.get("min_batch_size") and sofie.get("max_batch_size")
-                else ""
-            ),
-            f"init={sofie.get('init_time_ms', '')} ms" if sofie.get("init_time_ms") else "",
-        ]
-    )
-
-    return [
-        "SimpleParT",
-        "SOFIE C++",
-        sofie.get("events", ""),
-        "",
-        "",
-        "",
-        fmt(sofie.get("mean_latency_ms"), digits=3, suffix=" ms"),
-        fmt(sofie.get("p95_latency_ms"), digits=3, suffix=" ms"),
-        fmt(sofie.get("throughput_events_per_s"), digits=1, suffix=" ev/s"),
-        "",
-        notes,
-    ]
-
-
 def build_rows(
     pytorch: dict[str, Any] | None,
     onnx: dict[str, Any] | None,
-    sofie: dict[str, str] | None,
+    sofie: dict[str, Any] | None,
 ) -> list[list[str]]:
     return [
         row_from_runtime(pytorch, runtime_label="PyTorch"),
         row_from_runtime(onnx, runtime_label="ONNX Runtime"),
-        row_from_sofie(sofie),
+        row_from_runtime(sofie, runtime_label="SOFIE"),
     ]
 
 
@@ -344,8 +278,6 @@ def main() -> None:
     pytorch = load_json_if_exists(args.pytorch_json)
     onnx = load_json_if_exists(args.onnx_json)
     sofie = load_json_if_exists(args.sofie_json)
-    if sofie is None:
-        sofie = load_sofie_text(args.sofie_text)
 
     headers = [
         "Model",

@@ -53,7 +53,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--onnx",
         type=Path,
-        default=None,
+        default=Path("artifacts/exports/simple_part_benchmark.onnx"),
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--split", type=str, default="val")
@@ -311,7 +311,7 @@ class SofieBenchmark(RuntimeBenchmark):
         *,
         header_path: Path,
         weights_path: Path,
-        onnx_path: Path | None,
+        onnx_path: Path,
         norm_path: Path,
         input_normalization: str,
         output_kind: str,
@@ -355,7 +355,7 @@ class SofieBenchmark(RuntimeBenchmark):
             self.log(f"pyroot setup failed: {exc}")
             return self.build_unavailable_result("pyroot_setup_failed")
 
-        self.metadata = load_onnx_metadata(self.onnx_path) if self.onnx_path is not None else {}
+        self.metadata = load_onnx_metadata(self.onnx_path)
         if self.should_apply_external_normalization() and self.norm_path.exists():
             self.normalization = load_particle_normalization(self.norm_path)
             self.log(f"Applying external normalization from {self.norm_path}")
@@ -463,7 +463,7 @@ def main() -> None:
         config,
         header_path=Path(args["header"]),
         weights_path=Path(args["weights"]),
-        onnx_path=Path(args["onnx"]) if args["onnx"] is not None else None,
+        onnx_path=Path(args["onnx"]),
         norm_path=Path(args["norm_file"]),
         input_normalization=args["input_normalization"],
         output_kind=args["output_kind"],
