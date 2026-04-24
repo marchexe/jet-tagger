@@ -25,6 +25,7 @@ scripts/
   benchmark_pt.py             PyTorch benchmark
   benchmark_onnx.py           ONNX Runtime benchmark
   benchmark_sofie.py          optional SOFIE benchmark
+  run_full_benchmarks.py      end-to-end benchmark pipeline + system info
   generate_benchmark_table.py benchmark markdown + metric plot
   train_simple_part.py        training script
 
@@ -290,6 +291,23 @@ For a full PyTorch vs ONNX Runtime comparison:
 .\.venv\Scripts\python.exe scripts\benchmark_pt.py
 .\.venv\Scripts\python.exe scripts\benchmark_onnx.py
 .\.venv\Scripts\python.exe scripts\generate_benchmark_table.py
+```
+
+For a full PyTorch + ONNX Runtime + SOFIE pipeline with system information:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_full_benchmarks.py
+```
+
+This writes:
+
+```text
+artifacts/logs/benchmark_pytorch.json
+artifacts/logs/benchmark_onnx.json
+artifacts/logs/benchmark_sofie.json
+artifacts/logs/benchmark_system.json
+artifacts/logs/benchmark_table.md
+artifacts/logs/benchmark_metrics.png
 ```
 
 For Netron visualization:
