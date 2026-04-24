@@ -108,7 +108,7 @@ def load_onnx_metadata(onnx_path: Path) -> dict[str, str]:
 
 def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
     namespace_match = re.search(
-        r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?:(?!namespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{).)*?class\s+Session\b",
+        r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?:(?!namespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{).)*?(?:class|struct)\s+Session\b",
         header_text,
         re.DOTALL,
     )
