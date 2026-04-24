@@ -107,13 +107,18 @@ def load_onnx_metadata(onnx_path: Path) -> dict[str, str]:
 
 
 def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
-    namespace_match = re.search(
-        r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?:(?!namespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{).)*?(?:class|struct)\s+Session\b",
-        header_text,
-        re.DOTALL,
-    )
-    if namespace_match is None:
-        raise ValueError("Could not detect SOFIE namespace with Session declaration")
+    sofie_namespace_match = re.search(r"namespace\s+(TMVA_SOFIE_[A-Za-z0-9_]+)\s*\{", header_text)
+    if sofie_namespace_match is not None:
+        namespace_name = sofie_namespace_match.group(1)
+    else:
+        namespace_match = re.search(
+            r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?:(?!namespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{).)*?(?:class|struct)\s+Session\b",
+            header_text,
+            re.DOTALL,
+        )
+        if namespace_match is None:
+            raise ValueError("Could not detect SOFIE namespace with Session declaration")
+        namespace_name = namespace_match.group(1)
 
     dynamic_infer = re.search(
         r"\binfer\s*\(\s*size_t\s+[A-Za-z_][A-Za-z0-9_]*\s*,\s*size_t\s+[A-Za-z_][A-Za-z0-9_]*\s*,\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:std::)?uint8_t\s+const\s*\*",
@@ -121,7 +126,7 @@ def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
         re.DOTALL,
     )
     if dynamic_infer is not None:
-        return namespace_match.group(1), "dynamic_uint8"
+        return namespace_name, "dynamic_uint8"
 
     static_uint8_infer = re.search(
         r"\binfer\s*\(\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:std::)?uint8_t\s+const\s*\*",
@@ -129,7 +134,7 @@ def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
         re.DOTALL,
     )
     if static_uint8_infer is not None:
-        return namespace_match.group(1), "static_uint8"
+        return namespace_name, "static_uint8"
 
     static_bool_infer = re.search(
         r"\binfer\s*\(\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*bool\s+const\s*\*",
@@ -137,7 +142,7 @@ def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
         re.DOTALL,
     )
     if static_bool_infer is not None:
-        return namespace_match.group(1), "static_bool"
+        return namespace_name, "static_bool"
 
     raise ValueError("Could not detect supported SOFIE Session::infer signature")
 
