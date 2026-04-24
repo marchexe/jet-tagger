@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose ONNX parsing output from ROOT.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help="Concrete batch size to specialize dynamic SOFIE code generation.",
+    )
     return parser.parse_args()
 
 
@@ -69,7 +75,7 @@ def main() -> None:
 
     parser = ROOT.TMVA.Experimental.SOFIE.RModelParser_ONNX()
     model = parser.Parse(str(onnx_path), bool(args.verbose))
-    model.Generate()
+    model.Generate(batchSize=int(args.batch_size))
     model.OutputGenerated(str(output_header))
 
     output_dat = output_header.with_suffix(".dat")
