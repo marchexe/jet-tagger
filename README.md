@@ -4,10 +4,9 @@ Simple particle-transformer style classifier for jet tagging, with PyTorch,
 ONNX Runtime, and optional SOFIE benchmarking.
 
 The project uses one canonical PyTorch model (`SimpleParT`) and can export two
-different ONNX artifacts from the same checkpoint, plus a SOFIE-oriented ONNX:
+different ONNX artifacts from the same checkpoint:
 
 - `simple_part_benchmark.onnx` for runtime benchmarking.
-- `simple_part_sofie.onnx` for ROOT/TMVA SOFIE conversion.
 - `simple_part_visual.onnx` for Netron/model visualization.
 
 ## Project Layout
@@ -85,7 +84,7 @@ inside the selected split directory. `HToBB` is treated as label `1`, and
 
 ## Export ONNX
 
-There are three ONNX export variants.
+There are two ONNX export variants.
 
 ### Benchmark ONNX
 
@@ -128,27 +127,6 @@ This export is meant to be easier to inspect visually:
 - no embedded normalization by default
 - static batch by default
 - not intended as the main benchmark artifact
-
-### SOFIE ONNX
-
-Use this when the next step is ROOT/TMVA SOFIE conversion:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant sofie
-```
-
-Default output:
-
-```text
-artifacts/exports/simple_part_sofie.onnx
-```
-
-This export is tuned for SOFIE compatibility:
-
-- output is `logits`
-- input normalization is embedded
-- batch axis is dynamic
-- avoids the ONNX `Not` operator in the exported graph
 
 Optional flags:
 
@@ -217,10 +195,12 @@ cd /mnt/c/Users/ReDi_NRW_6489/Documents/jet-tagger
 ```
 
 Export fresh SOFIE artifacts with the same ROOT version that will run the
-benchmark:
+benchmark. SOFIE uses the same benchmark ONNX graph as ONNX Runtime; if ROOT
+cannot convert it, that is treated as a backend limitation rather than a
+different model variant.
 
 ```bash
-python scripts/export_onnx.py --variant sofie
+python scripts/export_onnx.py --variant benchmark
 python scripts/export_sofie.py
 ```
 

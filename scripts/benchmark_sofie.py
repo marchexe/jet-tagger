@@ -53,7 +53,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--onnx",
         type=Path,
-        default=Path("artifacts/exports/simple_part_sofie.onnx"),
+        default=None,
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--split", type=str, default="val")
@@ -106,14 +106,32 @@ def load_onnx_metadata(onnx_path: Path) -> dict[str, str]:
     return {prop.key: prop.value for prop in model.metadata_props}
 
 
-def extract_sofie_namespace(header_path: Path) -> str:
-    match = re.search(
-        r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{",
-        header_path.read_text(encoding="utf-8", errors="replace"),
+def detect_sofie_header_api(header_text: str) -> tuple[str, bool]:
+    namespace_match = re.search(
+        r"namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?:(?!namespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{).)*?class\s+Session\b",
+        header_text,
+        re.DOTALL,
     )
-    if not match:
-        raise ValueError(f"Could not detect SOFIE namespace in {header_path}")
-    return match.group(1)
+    if namespace_match is None:
+        raise ValueError("Could not detect SOFIE namespace with Session declaration")
+
+    dynamic_infer = re.search(
+        r"\binfer\s*\(\s*size_t\s+[A-Za-z_][A-Za-z0-9_]*\s*,\s*size_t\s+[A-Za-z_][A-Za-z0-9_]*\s*,\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:std::)?uint8_t\s+const\s*\*",
+        header_text,
+        re.DOTALL,
+    )
+    if dynamic_infer is not None:
+        return namespace_match.group(1), True
+
+    static_infer = re.search(
+        r"\binfer\s*\(\s*float\s+const\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*bool\s+const\s*\*",
+        header_text,
+        re.DOTALL,
+    )
+    if static_infer is not None:
+        return namespace_match.group(1), False
+
+    raise ValueError("Could not detect supported SOFIE Session::infer signature")
 
 
 def discover_root_include_paths() -> list[Path]:
@@ -154,7 +172,12 @@ class PyRootSofieRunner:
         max_constituents: int,
     ) -> None:
         self.header_text = header_path.read_text(encoding="utf-8", errors="replace")
-        self.dynamic_infer = "infer(size_t batch_size,size_t n_particles" in self.header_text
+        detected_namespace_name, self.dynamic_infer = detect_sofie_header_api(self.header_text)
+        if detected_namespace_name != namespace_name:
+            raise RuntimeError(
+                "Parsed SOFIE namespace does not match the namespace selected by the benchmark "
+                f"({detected_namespace_name!r} != {namespace_name!r})"
+            )
         include_paths = discover_root_include_paths()
         for include_path in include_paths:
             ROOT.gInterpreter.AddIncludePath(str(include_path.resolve()))
@@ -257,7 +280,7 @@ class SofieBenchmark(RuntimeBenchmark):
         *,
         header_path: Path,
         weights_path: Path,
-        onnx_path: Path,
+        onnx_path: Path | None,
         norm_path: Path,
         input_normalization: str,
         output_kind: str,
@@ -283,7 +306,12 @@ class SofieBenchmark(RuntimeBenchmark):
         if not HAS_PYROOT:
             return self.build_unavailable_result("pyroot_not_installed")
 
-        namespace_name = extract_sofie_namespace(self.header_path)
+        header_text = self.header_path.read_text(encoding="utf-8", errors="replace")
+        try:
+            namespace_name, _ = detect_sofie_header_api(header_text)
+        except ValueError as exc:
+            self.log(f"pyroot setup failed: {exc}")
+            return self.build_unavailable_result("unsupported_sofie_header")
         try:
             self.runner = PyRootSofieRunner(
                 self.header_path,
@@ -296,7 +324,7 @@ class SofieBenchmark(RuntimeBenchmark):
             self.log(f"pyroot setup failed: {exc}")
             return self.build_unavailable_result("pyroot_setup_failed")
 
-        self.metadata = load_onnx_metadata(self.onnx_path)
+        self.metadata = load_onnx_metadata(self.onnx_path) if self.onnx_path is not None else {}
         if self.should_apply_external_normalization() and self.norm_path.exists():
             self.normalization = load_particle_normalization(self.norm_path)
             self.log(f"Applying external normalization from {self.norm_path}")
@@ -404,7 +432,7 @@ def main() -> None:
         config,
         header_path=Path(args["header"]),
         weights_path=Path(args["weights"]),
-        onnx_path=Path(args["onnx"]),
+        onnx_path=Path(args["onnx"]) if args["onnx"] is not None else None,
         norm_path=Path(args["norm_file"]),
         input_normalization=args["input_normalization"],
         output_kind=args["output_kind"],

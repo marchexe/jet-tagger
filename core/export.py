@@ -20,37 +20,6 @@ def _project_last_dim(values: Tensor, weight: Tensor, bias: Tensor | None) -> Te
     return projected
 
 
-def _masked_mean_without_clip(values: Tensor, mask: Tensor) -> Tensor:
-    weights = mask.unsqueeze(-1).to(dtype=values.dtype)
-    total = (values * weights).sum(dim=1)
-    counts = weights.sum(dim=1).to(dtype=torch.int64).squeeze(-1)
-    reciprocal_lookup = torch.tensor(
-        [
-            1.0,
-            1.0,
-            0.5,
-            1.0 / 3.0,
-            0.25,
-            0.2,
-            1.0 / 6.0,
-            1.0 / 7.0,
-            0.125,
-            1.0 / 9.0,
-            0.1,
-            1.0 / 11.0,
-            1.0 / 12.0,
-            1.0 / 13.0,
-            1.0 / 14.0,
-            1.0 / 15.0,
-            1.0 / 16.0,
-        ],
-        dtype=values.dtype,
-        device=values.device,
-    )
-    scale = reciprocal_lookup[counts].unsqueeze(-1)
-    return total * scale
-
-
 class _ExportableSelfAttention(nn.Module):
     """Self-attention with MultiheadAttention-compatible parameter names."""
 
@@ -155,73 +124,6 @@ class _BenchmarkExportSimpleParT(nn.Module):
             key_padding_mask=attention_padding_mask,
         )
         pooled = masked_mean(attended, padding_mask)
-        return _project_last_dim(
-            pooled,
-            self.classifier.weight,
-            self.classifier.bias,
-        )
-
-
-class _SofieExportSimpleParT(nn.Module):
-    """SimpleParT variant with SOFIE-friendly masking that avoids ONNX `Not`."""
-
-    def __init__(
-        self,
-        input_dim: int,
-        num_classes: int = 2,
-        d_model: int = 64,
-        num_heads: int = 8,
-    ) -> None:
-        super().__init__()
-        if d_model % num_heads != 0:
-            raise ValueError("d_model must be divisible by num_heads")
-
-        self.embedding = nn.Linear(input_dim, d_model)
-        self.attention = _ExportableSelfAttention(
-            embed_dim=d_model,
-            num_heads=num_heads,
-        )
-        self.classifier = nn.Linear(d_model, num_classes)
-
-    def forward(self, x_particles: Tensor, padding_mask: Tensor) -> Tensor:
-        x = _project_last_dim(
-            x_particles,
-            self.embedding.weight,
-            self.embedding.bias,
-        )
-        batch_size, token_count, _ = x.shape
-
-        qkv = _project_last_dim(
-            x,
-            self.attention.in_proj_weight,
-            self.attention.in_proj_bias,
-        )
-        q, k, v = qkv.chunk(3, dim=-1)
-
-        q = self.attention._split_heads(q, batch_size, token_count)
-        k = self.attention._split_heads(k, batch_size, token_count)
-        v = self.attention._split_heads(v, batch_size, token_count)
-
-        scale = 1.0 / math.sqrt(self.attention.head_dim)
-        scores = torch.matmul(q, k.transpose(-2, -1)) * scale
-
-        valid_keys = padding_mask.to(dtype=scores.dtype)
-        key_bias = (valid_keys - 1.0)[:, None, None, :] * 1.0e9
-        scores = scores + key_bias
-
-        attention = torch.softmax(scores, dim=-1)
-        context = torch.matmul(attention, v)
-        context = context.transpose(1, 2).contiguous().view(
-            batch_size,
-            token_count,
-            self.attention.embed_dim,
-        )
-        attended = _project_last_dim(
-            context,
-            self.attention.out_proj.weight,
-            self.attention.out_proj.bias,
-        )
-        pooled = _masked_mean_without_clip(attended, padding_mask)
         return _project_last_dim(
             pooled,
             self.classifier.weight,
@@ -364,8 +266,6 @@ def build_export_model(*, variant: str) -> nn.Module:
     input_dim = len(DEFAULT_PARTICLE_FEATURES)
     if variant == "benchmark":
         return _BenchmarkExportSimpleParT(input_dim=input_dim)
-    if variant == "sofie":
-        return _SofieExportSimpleParT(input_dim=input_dim)
     if variant == "visual":
         return _VisualExportSimpleParT(input_dim=input_dim)
     raise ValueError(f"Unsupported export variant: {variant!r}")

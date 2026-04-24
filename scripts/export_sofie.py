@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--onnx",
         type=Path,
-        default=Path("artifacts/exports/simple_part_sofie.onnx"),
+        default=Path("artifacts/exports/simple_part_benchmark.onnx"),
         help="Input ONNX model to convert with TMVA SOFIE.",
     )
     parser.add_argument(
@@ -56,7 +56,7 @@ def main() -> None:
     if not onnx_path.exists():
         raise SystemExit(
             f"ONNX file not found: {onnx_path}. "
-            "Generate it first with `python scripts/export_onnx.py --variant sofie`."
+            "Generate it first with `python scripts/export_onnx.py --variant benchmark`."
         )
 
     if output_header.suffix.lower() != ".hxx":
