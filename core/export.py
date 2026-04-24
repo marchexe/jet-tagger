@@ -20,6 +20,13 @@ def _project_last_dim(values: Tensor, weight: Tensor, bias: Tensor | None) -> Te
     return projected
 
 
+def _masked_mean_without_clip(values: Tensor, mask: Tensor) -> Tensor:
+    weights = mask.unsqueeze(-1).to(dtype=values.dtype)
+    total = (values * weights).sum(dim=1)
+    counts = weights.sum(dim=1)
+    return total / counts
+
+
 class _ExportableSelfAttention(nn.Module):
     """Self-attention with MultiheadAttention-compatible parameter names."""
 
@@ -123,7 +130,7 @@ class _BenchmarkExportSimpleParT(nn.Module):
             x,
             key_padding_mask=attention_padding_mask,
         )
-        pooled = masked_mean(attended, padding_mask)
+        pooled = _masked_mean_without_clip(attended, padding_mask)
         return _project_last_dim(
             pooled,
             self.classifier.weight,
