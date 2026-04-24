@@ -26,9 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--variant",
         type=str,
-        choices=("benchmark", "visual"),
+        choices=("benchmark", "sofie", "visual"),
         default="benchmark",
-        help="Export benchmark-ready or visualization-friendly ONNX",
+        help="Export benchmark-ready, SOFIE-friendly, or visualization-friendly ONNX",
     )
     parser.add_argument(
         "--output",
@@ -54,12 +54,16 @@ def parse_args() -> argparse.Namespace:
 def default_output_path(variant: str) -> Path:
     if variant == "benchmark":
         return Path("artifacts/exports/simple_part_benchmark.onnx")
+    if variant == "sofie":
+        return Path("artifacts/exports/simple_part_sofie.onnx")
     return Path("artifacts/exports/simple_part_visual.onnx")
 
 
 def resolve_export_options(args: argparse.Namespace) -> tuple[Path, bool, bool]:
     output_path = args.output or default_output_path(args.variant)
     if args.variant == "benchmark":
+        return output_path, True, True
+    if args.variant == "sofie":
         return output_path, True, True
     return output_path, args.embed_normalization, args.dynamic_batch
 

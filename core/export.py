@@ -131,6 +131,73 @@ class _BenchmarkExportSimpleParT(nn.Module):
         )
 
 
+class _SofieExportSimpleParT(nn.Module):
+    """SimpleParT variant with SOFIE-friendly masking that avoids ONNX `Not`."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int = 2,
+        d_model: int = 64,
+        num_heads: int = 8,
+    ) -> None:
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+
+        self.embedding = nn.Linear(input_dim, d_model)
+        self.attention = _ExportableSelfAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+        )
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, x_particles: Tensor, padding_mask: Tensor) -> Tensor:
+        x = _project_last_dim(
+            x_particles,
+            self.embedding.weight,
+            self.embedding.bias,
+        )
+        batch_size, token_count, _ = x.shape
+
+        qkv = _project_last_dim(
+            x,
+            self.attention.in_proj_weight,
+            self.attention.in_proj_bias,
+        )
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = self.attention._split_heads(q, batch_size, token_count)
+        k = self.attention._split_heads(k, batch_size, token_count)
+        v = self.attention._split_heads(v, batch_size, token_count)
+
+        scale = 1.0 / math.sqrt(self.attention.head_dim)
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+
+        valid_keys = padding_mask.to(dtype=scores.dtype)
+        key_bias = (valid_keys - 1.0)[:, None, None, :] * 1.0e9
+        scores = scores + key_bias
+
+        attention = torch.softmax(scores, dim=-1)
+        context = torch.matmul(attention, v)
+        context = context.transpose(1, 2).contiguous().view(
+            batch_size,
+            token_count,
+            self.attention.embed_dim,
+        )
+        attended = _project_last_dim(
+            context,
+            self.attention.out_proj.weight,
+            self.attention.out_proj.bias,
+        )
+        pooled = masked_mean(attended, padding_mask)
+        return _project_last_dim(
+            pooled,
+            self.classifier.weight,
+            self.classifier.bias,
+        )
+
+
 class _VisualExportSelfAttention(nn.Module):
     """Checkpoint-compatible attention with a cleaner high-level ONNX export path."""
 
@@ -266,6 +333,8 @@ def build_export_model(*, variant: str) -> nn.Module:
     input_dim = len(DEFAULT_PARTICLE_FEATURES)
     if variant == "benchmark":
         return _BenchmarkExportSimpleParT(input_dim=input_dim)
+    if variant == "sofie":
+        return _SofieExportSimpleParT(input_dim=input_dim)
     if variant == "visual":
         return _VisualExportSimpleParT(input_dim=input_dim)
     raise ValueError(f"Unsupported export variant: {variant!r}")

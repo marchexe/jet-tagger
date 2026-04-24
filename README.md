@@ -4,9 +4,10 @@ Simple particle-transformer style classifier for jet tagging, with PyTorch,
 ONNX Runtime, and optional SOFIE benchmarking.
 
 The project uses one canonical PyTorch model (`SimpleParT`) and can export two
-different ONNX artifacts from the same checkpoint:
+different ONNX artifacts from the same checkpoint, plus a SOFIE-oriented ONNX:
 
 - `simple_part_benchmark.onnx` for runtime benchmarking.
+- `simple_part_sofie.onnx` for ROOT/TMVA SOFIE conversion.
 - `simple_part_visual.onnx` for Netron/model visualization.
 
 ## Project Layout
@@ -51,6 +52,12 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+Optional notebook/dev extras:
+
+```powershell
+pip install -r requirements-dev.txt
+```
+
 All commands below assume they are run from the project root.
 
 ## Expected Inputs
@@ -77,7 +84,7 @@ inside the selected split directory. `HToBB` is treated as label `1`, and
 
 ## Export ONNX
 
-There are two ONNX export variants.
+There are three ONNX export variants.
 
 ### Benchmark ONNX
 
@@ -120,6 +127,27 @@ This export is meant to be easier to inspect visually:
 - no embedded normalization by default
 - static batch by default
 - not intended as the main benchmark artifact
+
+### SOFIE ONNX
+
+Use this when the next step is ROOT/TMVA SOFIE conversion:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\export_onnx.py --variant sofie
+```
+
+Default output:
+
+```text
+artifacts/exports/simple_part_sofie.onnx
+```
+
+This export is tuned for SOFIE compatibility:
+
+- output is `logits`
+- input normalization is embedded
+- batch axis is dynamic
+- avoids the ONNX `Not` operator in the exported graph
 
 Optional flags:
 
@@ -191,6 +219,7 @@ Export fresh SOFIE artifacts with the same ROOT version that will run the
 benchmark:
 
 ```bash
+python scripts/export_onnx.py --variant sofie
 python scripts/export_sofie.py
 ```
 
@@ -249,7 +278,8 @@ You can also open:
 notebooks/benchmark_metrics.ipynb
 ```
 
-to inspect and regenerate the plot from a notebook.
+to inspect and regenerate the plot from a notebook. For notebook usage, install
+the optional extras from `requirements-dev.txt`.
 
 ## Typical Workflow
 
