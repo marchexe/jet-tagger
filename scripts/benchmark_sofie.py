@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +53,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--onnx",
         type=Path,
-        default=Path("artifacts/exports/simple_part_benchmark.onnx"),
+        default=Path("artifacts/exports/simple_part_sofie.onnx"),
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--split", type=str, default="val")
@@ -152,6 +153,8 @@ class PyRootSofieRunner:
         max_batch_size: int,
         max_constituents: int,
     ) -> None:
+        self.header_text = header_path.read_text(encoding="utf-8", errors="replace")
+        self.dynamic_infer = "infer(size_t batch_size,size_t n_particles" in self.header_text
         include_paths = discover_root_include_paths()
         for include_path in include_paths:
             ROOT.gInterpreter.AddIncludePath(str(include_path.resolve()))
@@ -171,7 +174,7 @@ class PyRootSofieRunner:
             f"""
             #include <cstdint>
             namespace jet_tagger_sofie_bridge {{
-            std::vector<float> infer_from_ptr(
+            std::vector<float> infer_dynamic_from_ptr(
                 {namespace_name}::Session& session,
                 std::size_t batch_size,
                 std::size_t n_particles,
@@ -185,28 +188,57 @@ class PyRootSofieRunner:
                     reinterpret_cast<std::uint8_t const*>(mask_ptr)
                 );
             }}
+            std::vector<float> infer_static_from_ptr(
+                {namespace_name}::Session& session,
+                std::uintptr_t x_ptr,
+                std::uintptr_t mask_ptr
+            ) {{
+                return session.infer(
+                    reinterpret_cast<float const*>(x_ptr),
+                    reinterpret_cast<bool const*>(mask_ptr)
+                );
+            }}
             }}
             """
         )
 
-        self.session = getattr(ROOT, namespace_name).Session(
-            str(weights_path),
-            int(max_batch_size),
-            int(max_constituents),
-        )
+        session_type = getattr(ROOT, namespace_name).Session
+        if self.dynamic_infer:
+            self.session = session_type(
+                str(weights_path),
+                int(max_batch_size),
+                int(max_constituents),
+            )
+        else:
+            self.session = session_type(str(weights_path))
         self.bridge = ROOT.jet_tagger_sofie_bridge
 
     def infer(self, x_batch: np.ndarray, mask_batch: np.ndarray) -> np.ndarray:
         x_flat = np.ascontiguousarray(x_batch.reshape(-1), dtype=np.float32)
-        mask_flat = np.ascontiguousarray(mask_batch.reshape(-1), dtype=np.uint8)
-        result = self.bridge.infer_from_ptr(
-            self.session,
-            int(x_batch.shape[0]),
-            int(x_batch.shape[1]),
-            int(x_flat.ctypes.data),
-            int(mask_flat.ctypes.data),
-        )
+        if self.dynamic_infer:
+            mask_flat = np.ascontiguousarray(mask_batch.reshape(-1), dtype=np.uint8)
+            result = self.bridge.infer_dynamic_from_ptr(
+                self.session,
+                int(x_batch.shape[0]),
+                int(x_batch.shape[1]),
+                int(x_flat.ctypes.data),
+                int(mask_flat.ctypes.data),
+            )
+        else:
+            mask_flat = np.ascontiguousarray(mask_batch.reshape(-1), dtype=np.bool_)
+            result = self.bridge.infer_static_from_ptr(
+                self.session,
+                int(x_flat.ctypes.data),
+                int(mask_flat.ctypes.data),
+            )
         return np.asarray(result, dtype=np.float32).reshape(x_batch.shape[0], -1)
+
+
+@dataclass
+class SofieBatch:
+    x_batch: np.ndarray
+    mask_batch: np.ndarray
+    actual_size: int
 
 
 class SofieBenchmark(RuntimeBenchmark):
@@ -295,16 +327,44 @@ class SofieBenchmark(RuntimeBenchmark):
 
     def evaluate(self, split_arrays: SplitArrays) -> dict[str, float | str]:
         assert self.runner is not None
-        outputs = self.runner.infer(split_arrays.x_particles, split_arrays.mask)
+        batches, _ = self.prepare_batches(split_arrays)
+        outputs = []
+        for batch in batches:
+            batch_outputs = self.run_batch(batch)
+            outputs.append(batch_outputs[: batch.actual_size])
+        outputs = np.concatenate(outputs, axis=0)
         return compute_classification_metrics(
             outputs,
             split_arrays.labels,
             output_kind=self.output_kind,
         )
 
+    def prepare_batch(self, x_batch: np.ndarray, mask_batch: np.ndarray) -> SofieBatch:
+        actual_size = int(x_batch.shape[0])
+        target_size = self.config.batch_size
+        if actual_size == target_size:
+            return SofieBatch(x_batch=x_batch, mask_batch=mask_batch, actual_size=actual_size)
+
+        padded_x = np.zeros(
+            (target_size, x_batch.shape[1], x_batch.shape[2]),
+            dtype=x_batch.dtype,
+        )
+        padded_mask = np.zeros(
+            (target_size, mask_batch.shape[1]),
+            dtype=mask_batch.dtype,
+        )
+        padded_x[:actual_size] = x_batch
+        padded_mask[:actual_size] = mask_batch
+        return SofieBatch(x_batch=padded_x, mask_batch=padded_mask, actual_size=actual_size)
+
     def run_batch(self, batch):
         assert self.runner is not None
-        return self.runner.infer(batch[0], batch[1])
+        return self.runner.infer(batch.x_batch, batch.mask_batch)
+
+    def batch_event_count(self, batch) -> int:
+        if isinstance(batch, SofieBatch):
+            return batch.actual_size
+        return super().batch_event_count(batch)
 
     def build_artifacts(self) -> dict[str, str]:
         return {
