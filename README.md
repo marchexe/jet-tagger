@@ -287,6 +287,13 @@ For a full PyTorch + ONNX Runtime + SOFIE pipeline with system information:
 .\.venv\Scripts\python.exe scripts\run_full_benchmarks.py
 ```
 
+If a full run is too slow, keep `accuracy/loss` on the full split but limit the
+number of batches used for latency and memory:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_full_benchmarks.py --latency-max-batches 64 --memory-max-batches 64
+```
+
 This script always:
 
 ```text

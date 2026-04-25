@@ -54,6 +54,8 @@ def parse_args() -> dict:
     parser.add_argument("--measure-runs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--max-events", type=int, default=0)
+    parser.add_argument("--latency-max-batches", type=int, default=0)
+    parser.add_argument("--memory-max-batches", type=int, default=0)
     parser.add_argument("--providers", type=str, default="CPUExecutionProvider")
     parser.add_argument(
         "--input-normalization",
@@ -298,6 +300,8 @@ def main() -> None:
         measure_runs=args["measure_runs"],
         output_json=Path(args["output_json"]),
         max_events=args["max_events"] or None,
+        latency_max_batches=args["latency_max_batches"] or None,
+        memory_max_batches=args["memory_max_batches"] or None,
     )
     benchmark = OnnxBenchmark(
         config,

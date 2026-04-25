@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=0)
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measure-runs", type=int, default=20)
+    parser.add_argument("--latency-max-batches", type=int, default=0)
+    parser.add_argument("--memory-max-batches", type=int, default=0)
     parser.add_argument("--max-constituents", type=int, default=16)
     parser.add_argument("--step-size", type=str, default="4 MB")
     parser.add_argument("--device", type=str, default="cpu")
@@ -91,6 +93,8 @@ def main() -> None:
         "max_events": None if args.max_events <= 0 else args.max_events,
         "warmup_runs": args.warmup_runs,
         "measure_runs": args.measure_runs,
+        "latency_max_batches": args.latency_max_batches or None,
+        "memory_max_batches": args.memory_max_batches or None,
         "max_constituents": args.max_constituents,
         "step_size": args.step_size,
         "device": args.device,
@@ -126,6 +130,10 @@ def main() -> None:
     ]
     if args.max_events > 0:
         common_args.extend(["--max-events", str(args.max_events)])
+    if args.latency_max_batches > 0:
+        common_args.extend(["--latency-max-batches", str(args.latency_max_batches)])
+    if args.memory_max_batches > 0:
+        common_args.extend(["--memory-max-batches", str(args.memory_max_batches)])
 
     python_executable = args.python
 

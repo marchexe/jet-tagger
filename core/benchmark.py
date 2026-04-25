@@ -40,6 +40,8 @@ class BenchmarkConfig:
     measure_runs: int
     output_json: Path
     max_events: int | None = None
+    latency_max_batches: int | None = None
+    memory_max_batches: int | None = None
 
 
 def load_normalization_from_checkpoint(
@@ -462,6 +464,21 @@ class RuntimeBenchmark(ABC):
     def build_extra(self) -> dict[str, Any] | None:
         return None
 
+    def limit_batches(
+        self,
+        batches: Sequence[Any],
+        *,
+        max_batches: int | None,
+        purpose: str,
+    ) -> list[Any]:
+        if max_batches is None or max_batches <= 0 or len(batches) <= max_batches:
+            return list(batches)
+        limited = list(batches[:max_batches])
+        self.log(
+            f"Using {len(limited)}/{len(batches)} batches for {purpose} benchmarking"
+        )
+        return limited
+
     def run(self) -> dict[str, Any]:
         unavailable_result = self.setup()
         if unavailable_result is not None:
@@ -480,10 +497,20 @@ class RuntimeBenchmark(ABC):
             self.log(summary)
 
         batches, batching = self.prepare_batches(split_arrays)
+        latency_batches = self.limit_batches(
+            batches,
+            max_batches=self.config.latency_max_batches,
+            purpose="latency",
+        )
+        memory_batches = self.limit_batches(
+            batches,
+            max_batches=self.config.memory_max_batches,
+            purpose="memory",
+        )
 
         print("\n[benchmark] Benchmarking latency...", flush=True)
         latency = benchmark_latency(
-            batches,
+            latency_batches,
             run_batch=self.run_batch,
             batch_size_of=self.batch_event_count,
             warmup_runs=self.config.warmup_runs,
@@ -493,7 +520,7 @@ class RuntimeBenchmark(ABC):
 
         print("\n[benchmark] Benchmarking memory...", flush=True)
         memory = benchmark_memory(
-            batches,
+            memory_batches,
             run_batch=self.run_batch,
             synchronize=self.synchronize,
             prepare_peak_memory=self.prepare_peak_memory,
@@ -510,7 +537,11 @@ class RuntimeBenchmark(ABC):
             latency=latency,
             memory=memory,
             artifacts=self.build_artifacts(),
-            extra=self.build_extra(),
+            extra={
+                **(self.build_extra() or {}),
+                "latency_max_batches": self.config.latency_max_batches,
+                "memory_max_batches": self.config.memory_max_batches,
+            },
         )
         self.write_result(result)
         self.log(f"Results saved to {self.config.output_json}")
