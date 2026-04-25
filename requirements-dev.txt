@@ -1,4 +1,0 @@
--r requirements.txt
-
-# Optional notebook/dev experience.
-ipykernel==7.2.0
