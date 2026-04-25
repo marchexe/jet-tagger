@@ -1,7 +1,7 @@
 # Jet Tagger
 
-Simple particle-transformer style classifier for jet tagging, with PyTorch,
-ONNX Runtime, and optional SOFIE benchmarking.
+Simple particle-transformer style classifier for jet tagging, with a shared
+runtime pipeline for PyTorch, ONNX Runtime, and SOFIE benchmarking.
 
 The project uses one canonical PyTorch model (`SimpleParT`) and can export two
 different ONNX artifacts from the same checkpoint:
@@ -13,6 +13,19 @@ The trained PyTorch model in `core/model.py` remains the source of truth. The
 runtime pipeline starts from the frozen checkpoint and does not introduce a
 separate model implementation for benchmarking.
 
+## Model Structure
+
+The current `SimpleParT` model uses a linear particle embedding, a single
+multi-head self-attention layer (`num_heads=8`, `embed_dim=64`), masked mean
+pooling, and a final classification layer. The visualization-oriented ONNX
+export shows this high-level structure directly:
+
+![SimpleParT visual ONNX graph](docs/images/simple_part_visual.onnx.png)
+
+The visual export ends with `Softmax` to expose probabilities more clearly. The
+benchmark export stops at logits, which is the form used for runtime
+measurement and loss computation.
+
 ## Project Layout
 
 ```text
@@ -20,6 +33,7 @@ core/
   data.py        ROOT reading, dense tensors, masks, normalization
   model.py       canonical PyTorch SimpleParT model
   export.py      ONNX export pipeline
+  onnx_metadata.py shared ONNX metadata helpers
   benchmark.py   shared benchmark framework
 
 scripts/
@@ -38,31 +52,23 @@ notebooks/
 artifacts/
   checkpoints/  trained checkpoints and normalization
   exports/      ONNX exports
+  sofie/        generated SOFIE C++ artifacts (.hxx/.dat)
   logs/         benchmark JSON files and plots
 ```
 
 ## Setup
 
-Create and activate a virtual environment:
+Install the runtime dependencies:
 
-```powershell
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-Install dependencies:
-
-```powershell
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Optional notebook/dev extras:
-
-```powershell
-pip install -r requirements-dev.txt
-```
-
-All commands below assume they are run from the project root.
+On SWAN, if the project is opened inside a preconfigured LCG/SWAN software
+environment, you can usually run the scripts directly without creating a local
+virtual environment or installing dependencies yourself.
 
 ## Expected Inputs
 
@@ -86,6 +92,41 @@ HToGG_*.root
 inside the selected split directory. `HToBB` is treated as label `1`, and
 `HToGG` as label `0`.
 
+## Train the Model
+
+To train the model used in the export and benchmark pipeline, run:
+
+```bash
+python scripts/train_simple_part.py
+```
+
+This produces the training artifacts used later by the runtime pipeline:
+
+- `artifacts/checkpoints/simple_part_best.pt`
+- `artifacts/checkpoints/simple_part_checkpoint.pt`
+- `artifacts/checkpoints/particle_norm.npz`
+- `artifacts/logs/train.log`
+
+Training options you are most likely to adjust:
+
+- `--epochs` to change the number of training epochs
+- `--lr` to change the learning rate
+- `--device` to choose `cpu` or `cuda`
+- `--resume` to continue from the last saved checkpoint
+- `--limit-files` to restrict the number of ROOT files for a quick test run
+- `--max-train-batches` to cap the number of training batches per epoch
+- `--max-val-batches` to cap the number of validation batches
+- `--max-constituents` to change the number of particles kept per jet
+- `--step-size` to control ROOT reading chunk size
+
+Example notebook used for the binary setup:
+
+- Kaggle notebook: https://www.kaggle.com/code/morius/jetclassbinaryclassifier
+- Kaggle dataset: https://www.kaggle.com/datasets/morius/jetclass-htobb-htogg
+
+The export and benchmark pipeline below assumes that
+`artifacts/checkpoints/simple_part_best.pt` already exists.
+
 ## Export ONNX
 
 There are two ONNX export variants.
@@ -94,8 +135,8 @@ There are two ONNX export variants.
 
 Use this for ONNX Runtime benchmarking:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant benchmark
+```bash
+python scripts/export_onnx.py --variant benchmark
 ```
 
 Default output:
@@ -115,8 +156,8 @@ This export is optimized for benchmarking:
 
 Use this for Netron/model visualization:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant visual
+```bash
+python scripts/export_onnx.py --variant visual
 ```
 
 Default output:
@@ -132,19 +173,12 @@ This export is meant to be easier to inspect visually:
 - static batch by default
 - not intended as the main benchmark artifact
 
-Optional flags:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant visual --embed-normalization
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant visual --dynamic-batch
-```
-
 ## Run Benchmarks
 
 ### PyTorch
 
-```powershell
-.\.venv\Scripts\python.exe scripts\benchmark_pt.py
+```bash
+python scripts/benchmark_pt.py
 ```
 
 Default output:
@@ -155,22 +189,22 @@ artifacts/logs/benchmark_pytorch.json
 
 Useful quick test:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\benchmark_pt.py --max-events 2048
+```bash
+python scripts/benchmark_pt.py --max-events 2048
 ```
 
 ### ONNX Runtime
 
 Export the benchmark ONNX first:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant benchmark
+```bash
+python scripts/export_onnx.py --variant benchmark
 ```
 
 Then run:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\benchmark_onnx.py
+```bash
+python scripts/benchmark_onnx.py
 ```
 
 Default output:
@@ -181,21 +215,23 @@ artifacts/logs/benchmark_onnx.json
 
 Useful quick test:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\benchmark_onnx.py --max-events 2048
+```bash
+python scripts/benchmark_onnx.py --max-events 2048
 ```
 
 ### SOFIE
 
-SOFIE benchmarking is optional and is intended to run in WSL/Linux or SWAN
-with PyROOT from the same ROOT installation that generates the SOFIE code.
+In principle, the SOFIE pipeline can be run in WSL/Linux with PyROOT, and that
+was the first route explored here. In practice, setting up a suitable local
+ROOT environment can take a long time, so the final workflow was moved to SWAN,
+where a bleeding-edge ROOT environment was available out of the box.
 
-Recommended WSL setup:
+Example WSL setup:
 
 ```bash
-micromamba create -n sofie310 -c conda-forge python=3.10 root numpy psutil awkward uproot onnx matplotlib
-micromamba activate sofie310
-cd /mnt/c/Users/ReDi_NRW_6489/Documents/jet-tagger
+micromamba create -n sofie-env -c conda-forge python=3.12 root numpy psutil awkward uproot onnx matplotlib
+micromamba activate sofie-env
+cd /mnt/c/Users/<user>/path/to/jet-tagger
 ```
 
 Export fresh SOFIE artifacts with the same ROOT version that will run the
@@ -222,13 +258,13 @@ artifacts/sofie/simple_part.dat
 Then run:
 
 ```bash
-python scripts/benchmark_sofie.py --onnx artifacts/exports/simple_part_benchmark.onnx
+python scripts/benchmark_sofie.py --onnx artifacts/exports/simple_part_benchmark.onnx --input-normalization never
 ```
 
 Useful quick test:
 
 ```bash
-python scripts/benchmark_sofie.py --onnx artifacts/exports/simple_part_benchmark.onnx --max-events 2048 --warmup-runs 1 --measure-runs 1 --batch-size 128
+python scripts/benchmark_sofie.py --onnx artifacts/exports/simple_part_benchmark.onnx --input-normalization never --max-events 2048 --warmup-runs 1 --measure-runs 1 --batch-size 128
 ```
 
 The benchmark writes:
@@ -237,12 +273,16 @@ The benchmark writes:
 artifacts/logs/benchmark_sofie.json
 ```
 
+`simple_part_benchmark.onnx` already embeds input normalization. When using it
+as the source graph for SOFIE, keep `--input-normalization never` to avoid
+applying normalization twice.
+
 ## Generate Benchmark Plots
 
 After running benchmarks:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\generate_benchmark_table.py
+```bash
+python scripts/generate_benchmark_table.py
 ```
 
 Outputs:
@@ -267,31 +307,30 @@ You can also open:
 notebooks/benchmark_metrics.ipynb
 ```
 
-to inspect and regenerate the plot from a notebook. For notebook usage, install
-the optional extras from `requirements-dev.txt`.
+to inspect and regenerate the plot from a notebook.
 
 ## Typical Workflow
 
 For a full PyTorch vs ONNX Runtime comparison:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant benchmark
-.\.venv\Scripts\python.exe scripts\benchmark_pt.py
-.\.venv\Scripts\python.exe scripts\benchmark_onnx.py
-.\.venv\Scripts\python.exe scripts\generate_benchmark_table.py
+```bash
+python scripts/export_onnx.py --variant benchmark
+python scripts/benchmark_pt.py
+python scripts/benchmark_onnx.py
+python scripts/generate_benchmark_table.py
 ```
 
 For a full PyTorch + ONNX Runtime + SOFIE pipeline with system information:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\run_full_benchmarks.py
+```bash
+python scripts/run_full_benchmarks.py
 ```
 
 If a full run is too slow, keep `accuracy/loss` on the full split but limit the
 number of batches used for latency and memory:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\run_full_benchmarks.py --latency-max-batches 64 --memory-max-batches 64
+```bash
+python scripts/run_full_benchmarks.py --batch-size 128 --warmup-runs 5 --measure-runs 20 --latency-max-batches 64 --memory-max-batches 64
 ```
 
 This script always:
@@ -318,8 +357,8 @@ artifacts/logs/benchmark_metrics.png
 
 For Netron visualization:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\export_onnx.py --variant visual
+```bash
+python scripts/export_onnx.py --variant visual
 ```
 
 Then open:

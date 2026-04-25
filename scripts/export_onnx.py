@@ -38,16 +38,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-constituents", type=int, default=16)
     parser.add_argument("--opset", type=int, default=17)
-    parser.add_argument(
-        "--embed-normalization",
-        action="store_true",
-        help="Embed input normalization into the exported graph",
-    )
-    parser.add_argument(
-        "--dynamic-batch",
-        action="store_true",
-        help="Make the exported graph support dynamic batch size",
-    )
     return parser.parse_args()
 
 
@@ -61,7 +51,7 @@ def resolve_export_options(args: argparse.Namespace) -> tuple[Path, bool, bool]:
     output_path = args.output or default_output_path(args.variant)
     if args.variant == "benchmark":
         return output_path, True, True
-    return output_path, args.embed_normalization, args.dynamic_batch
+    return output_path, False, False
 
 
 def main() -> None:

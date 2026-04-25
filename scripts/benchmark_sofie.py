@@ -19,14 +19,8 @@ import numpy as np
 
 from core.benchmark import BenchmarkConfig, RuntimeBenchmark, SplitArrays, compute_classification_metrics
 from core.data import ParticleNormalization, load_particle_normalization
+from core.onnx_metadata import load_onnx_metadata, parse_bool_metadata
 
-
-try:
-    import onnx
-
-    HAS_ONNX = True
-except ImportError:
-    HAS_ONNX = False
 
 try:
     import ROOT  # type: ignore[import-not-found]
@@ -88,26 +82,6 @@ def parse_args() -> dict:
         default=Path("artifacts/logs/benchmark_sofie.json"),
     )
     return vars(parser.parse_args())
-
-
-def parse_bool_metadata(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    lowered = value.strip().lower()
-    if lowered in {"1", "true", "yes"}:
-        return True
-    if lowered in {"0", "false", "no"}:
-        return False
-    return None
-
-
-def load_onnx_metadata(onnx_path: Path) -> dict[str, str]:
-    if not HAS_ONNX or not onnx_path.exists():
-        return {}
-    model = onnx.load(str(onnx_path), load_external_data=False)
-    return {prop.key: prop.value for prop in model.metadata_props}
-
-
 def detect_sofie_header_api(header_text: str) -> tuple[str, str]:
     sofie_namespace_match = re.search(r"namespace\s+(TMVA_SOFIE_[A-Za-z0-9_]+)\s*\{", header_text)
     if sofie_namespace_match is not None:

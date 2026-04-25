@@ -47,7 +47,8 @@ def main() -> None:
     except ImportError as exc:  # pragma: no cover
         raise SystemExit(
             "PyROOT is not installed in the active environment. "
-            "Install ROOT first, e.g. `micromamba install -n sofie310 -c conda-forge root`."
+            "Install ROOT first in your WSL/Linux/SWAN environment, for example "
+            "`micromamba install -n sofie-env -c conda-forge root`."
         ) from exc
 
     onnx_path = args.onnx.resolve()

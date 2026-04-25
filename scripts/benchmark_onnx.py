@@ -1,4 +1,7 @@
 from __future__ import annotations
+from core.onnx_metadata import load_onnx_metadata, parse_bool_metadata
+from core.data import ParticleNormalization, load_particle_normalization
+from core.benchmark import BenchmarkConfig, RuntimeBenchmark, SplitArrays, compute_classification_metrics
 
 import sys
 from pathlib import Path
@@ -13,9 +16,6 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from core.benchmark import BenchmarkConfig, RuntimeBenchmark, SplitArrays, compute_classification_metrics
-from core.data import ParticleNormalization, load_particle_normalization
-
 
 try:
     import onnxruntime as ort
@@ -24,18 +24,12 @@ try:
 except ImportError:
     HAS_ONNX = False
 
-try:
-    import onnx
-
-    HAS_ONNX_PARSER = True
-except ImportError:
-    HAS_ONNX_PARSER = False
-
 
 def parse_args() -> dict:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Benchmark ONNX Runtime inference")
+    parser = argparse.ArgumentParser(
+        description="Benchmark ONNX Runtime inference")
     parser.add_argument(
         "--onnx",
         type=Path,
@@ -56,7 +50,8 @@ def parse_args() -> dict:
     parser.add_argument("--max-events", type=int, default=0)
     parser.add_argument("--latency-max-batches", type=int, default=0)
     parser.add_argument("--memory-max-batches", type=int, default=0)
-    parser.add_argument("--providers", type=str, default="CPUExecutionProvider")
+    parser.add_argument("--providers", type=str,
+                        default="CPUExecutionProvider")
     parser.add_argument(
         "--input-normalization",
         type=str,
@@ -75,24 +70,6 @@ def parse_args() -> dict:
         default=Path("artifacts/logs/benchmark_onnx.json"),
     )
     return vars(parser.parse_args())
-
-
-def parse_bool_metadata(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    lowered = value.strip().lower()
-    if lowered in {"1", "true", "yes"}:
-        return True
-    if lowered in {"0", "false", "no"}:
-        return False
-    return None
-
-
-def load_onnx_metadata(onnx_path: Path) -> dict[str, str]:
-    if not HAS_ONNX_PARSER or not onnx_path.exists():
-        return {}
-    model = onnx.load(str(onnx_path), load_external_data=False)
-    return {prop.key: prop.value for prop in model.metadata_props}
 
 
 class OnnxBenchmark(RuntimeBenchmark):
@@ -135,13 +112,16 @@ class OnnxBenchmark(RuntimeBenchmark):
 
         if self.should_apply_external_normalization():
             if self.norm_path.exists():
-                self.normalization = load_particle_normalization(self.norm_path)
-                self.log(f"Applying external normalization from {self.norm_path}")
+                self.normalization = load_particle_normalization(
+                    self.norm_path)
+                self.log(
+                    f"Applying external normalization from {self.norm_path}")
         else:
             self.log("Using raw input tensors for ONNX session")
 
         self.output_kind = self.resolve_output_kind()
-        self.log(f"ONNX outputs: {[output.name for output in self.session.get_outputs()]}")
+        self.log(
+            f"ONNX outputs: {[output.name for output in self.session.get_outputs()]}")
         self.effective_batch_size = self.resolve_effective_batch_size()
         if self.effective_batch_size == 1:
             target_events = (
@@ -161,7 +141,8 @@ class OnnxBenchmark(RuntimeBenchmark):
         if self.input_normalization == "never":
             return False
 
-        embedded = parse_bool_metadata(self.metadata.get("jet_tagger_embedded_normalization"))
+        embedded = parse_bool_metadata(
+            self.metadata.get("jet_tagger_embedded_normalization"))
         if embedded is not None:
             return not embedded
 
@@ -241,7 +222,8 @@ class OnnxBenchmark(RuntimeBenchmark):
     def evaluate(self, split_arrays: SplitArrays) -> dict[str, float | str]:
         outputs = []
         for start_idx in range(0, split_arrays.event_count, self.effective_batch_size):
-            end_idx = min(start_idx + self.effective_batch_size, split_arrays.event_count)
+            end_idx = min(start_idx + self.effective_batch_size,
+                          split_arrays.event_count)
             outputs.append(
                 self.run_model(
                     split_arrays.x_particles[start_idx:end_idx],
@@ -270,7 +252,8 @@ class OnnxBenchmark(RuntimeBenchmark):
             numpy_batches,
             requested_batch_size=self.config.batch_size,
         )
-        self.log(format_batching_message(event_count=split_arrays.event_count, batching=batching)[12:])
+        self.log(format_batching_message(
+            event_count=split_arrays.event_count, batching=batching)[12:])
         return numpy_batches, batching
 
     def build_artifacts(self) -> dict[str, str]:
